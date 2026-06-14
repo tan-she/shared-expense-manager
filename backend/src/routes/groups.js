@@ -244,6 +244,40 @@ router.put('/:id/members/:userId/leave', asyncHandler(async (req, res) => {
     throw createError(404, 'Active membership record not found.');
   }
 
+  // Check Creator Lockout Rule:
+  // If the leaving user is the creator, and there are other active members,
+  // we must transfer ownership.
+  const groupInfo = await pool.query(
+    `SELECT creator_id FROM groups WHERE id = $1`,
+    [groupId]
+  );
+  
+  if (groupInfo.rows.length > 0 && groupInfo.rows[0].creator_id === userId) {
+    const activeMembersCount = await pool.query(
+      `SELECT user_id FROM group_members WHERE group_id = $1 AND left_at IS NULL`,
+      [groupId]
+    );
+    
+    if (activeMembersCount.rows.length > 1) {
+      const { transfer_to_user_id } = req.body;
+      if (!transfer_to_user_id) {
+        throw createError(400, 'Group creator cannot leave while other active members exist without transferring ownership. Please provide transfer_to_user_id.');
+      }
+      
+      // Verify new owner is currently active
+      const isNewOwnerActive = await MembershipService.isActiveMember(transfer_to_user_id, groupId);
+      if (!isNewOwnerActive) {
+        throw createError(400, 'Selected transfer user is not currently an active member of this group.');
+      }
+      
+      // Update creator_id
+      await pool.query(
+        `UPDATE groups SET creator_id = $1 WHERE id = $2`,
+        [transfer_to_user_id, groupId]
+      );
+    }
+  }
+
   const leaveDate = left_at ? new Date(left_at) : new Date();
 
   if (leaveDate <= new Date(memberCheck.rows[0].joined_at)) {
