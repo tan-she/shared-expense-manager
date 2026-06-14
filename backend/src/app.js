@@ -22,6 +22,7 @@
 import express from 'express';
 import cors from 'cors';
 import authRoutes from './routes/auth.js';
+import groupRoutes from './routes/groups.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
@@ -46,9 +47,9 @@ app.get('/health', (req, res) => {
 
 // ── Routes ────────────────────────────────────────────────────────────────
 app.use('/auth', authRoutes);
+app.use('/api/groups', groupRoutes);
 
 // Placeholder mounts — will be filled in by later phases
-// app.use('/api/groups',      groupRoutes);
 // app.use('/api/expenses',    expenseRoutes);
 // app.use('/api/settlements', settlementRoutes);
 // app.use('/api/balances',    balanceRoutes);
