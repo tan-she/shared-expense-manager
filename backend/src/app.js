@@ -26,6 +26,7 @@ import groupRoutes from './routes/groups.js';
 import expenseRoutes from './routes/expenses.js';
 import settlementRoutes from './routes/settlements.js';
 import balanceRoutes from './routes/balances.js';
+import importRoutes from './routes/imports.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
@@ -54,9 +55,7 @@ app.use('/api/groups', groupRoutes);
 app.use('/api/expenses', expenseRoutes);
 app.use('/api/settlements', settlementRoutes);
 app.use('/api/balances', balanceRoutes);
-
-// Placeholder mounts — will be filled in by later phases
-// app.use('/api/imports',     importRoutes);
+app.use('/api/imports', importRoutes);
 
 // ── 404 Handler ───────────────────────────────────────────────────────────
 // If no route matched, create a 404 error and pass it to errorHandler.
