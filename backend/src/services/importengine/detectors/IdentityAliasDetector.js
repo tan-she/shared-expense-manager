@@ -17,22 +17,38 @@ export default class IdentityAliasDetector extends AnomalyDetector {
     for (const item of items) {
       if (!item) continue;
 
-      // If it doesn't look like an email (doesn't contain '@')
+      // If it doesn't look like a formal email
       if (!item.includes('@')) {
-        // Find best match in group members by name prefix similarity
         const normalizedItem = item.toLowerCase();
-        const matchedMember = groupMembers.find(m => 
+        
+        // Find all potential matching members
+        const matches = groupMembers.filter(m => 
           m.name.toLowerCase().includes(normalizedItem) ||
           normalizedItem.includes(m.name.toLowerCase()) ||
           m.email.toLowerCase().startsWith(normalizedItem)
         );
 
-        if (matchedMember) {
+        if (matches.length === 1) {
+          const matchedMember = matches[0];
+          // High Confidence match if item is sufficiently long and matches uniquely
+          const isHighConfidence = normalizedItem.length >= 3;
+          
           return {
             anomaly_type: this.name,
-            severity: this.severity,
-            description: `Identifier "${item}" appears to be an alias for group member "${matchedMember.name}".`,
-            suggested_fix: `Replace "${item}" with "${matchedMember.email}".`
+            severity: isHighConfidence ? 'INFO' : 'WARNING',
+            description: `Identifier "${item}" matched group member "${matchedMember.name}".`,
+            suggested_fix: `Replace "${item}" with "${matchedMember.email}".`,
+            confidence: isHighConfidence ? 'HIGH_CONFIDENCE_AUTO_RESOLVABLE' : 'LOW_CONFIDENCE_REVIEW_REQUIRED'
+          };
+        } else if (matches.length > 1) {
+          // Ambiguous: multiple potential matches
+          const candidateNames = matches.map(m => m.name).join(', ');
+          return {
+            anomaly_type: this.name,
+            severity: 'CRITICAL',
+            description: `Ambiguous alias "${item}". Matches multiple members: [${candidateNames}].`,
+            suggested_fix: 'Explicit manual confirmation is required. Please specify the exact email.',
+            confidence: 'LOW_CONFIDENCE_REVIEW_REQUIRED'
           };
         }
       }
