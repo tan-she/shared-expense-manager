@@ -73,8 +73,8 @@ router.post('/', asyncHandler(async (req, res) => {
   const payerBal = groupBalances.find(b => b.user_id === parseInt(from_user_id))?.net_balance || 0;
   const payeeBal = groupBalances.find(b => b.user_id === parseInt(to_user_id))?.net_balance || 0;
 
-  if (payerBal >= 0 && payeeBal <= 0) {
-    throw createError(400, 'Invalid settlement: Payer must owe money or receiver must be owed money to settle a debt.');
+  if (payerBal >= 0 || payeeBal <= 0) {
+    throw createError(400, 'Invalid settlement: Payer must owe money (net balance < 0) AND receiver must be owed money (net balance > 0) to record a settlement.');
   }
 
   const result = await pool.query(

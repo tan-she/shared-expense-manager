@@ -3,6 +3,7 @@
  *
  * Builds chronological ledger statements explaining how net balances are calculated.
  * Traces CREDITS (payments), DEBITS (splits), and SETTLEMENT transactions.
+ * Includes balanceType (CREDIT or DEBIT) for easier frontend layout rendering.
  *
  * Design Pattern: Service Layer
  */
@@ -35,6 +36,7 @@ class BalanceBreakdownService {
         breakdowns[payerId].push({
           date: exp.expense_date,
           type: 'CREDIT',
+          balanceType: 'CREDIT',
           description: `Paid for: ${exp.description}`,
           amount: expenseAmount
         });
@@ -54,6 +56,7 @@ class BalanceBreakdownService {
           breakdowns[debtorId].push({
             date: exp.expense_date,
             type: 'DEBIT',
+            balanceType: 'DEBIT',
             description: `Share of: ${exp.description}`,
             amount: share
           });
@@ -79,6 +82,7 @@ class BalanceBreakdownService {
         breakdowns[fromId].push({
           date: set.settlement_date,
           type: 'SETTLEMENT_PAYOUT',
+          balanceType: 'CREDIT', // Settle payout reduces debtor balance (like a credit event)
           description: `Settled payment to: ${recipient ? recipient.name : 'Unknown User'}`,
           amount: amt
         });
@@ -89,6 +93,7 @@ class BalanceBreakdownService {
         breakdowns[toId].push({
           date: set.settlement_date,
           type: 'SETTLEMENT_RECEIVE',
+          balanceType: 'DEBIT', // Settle receive reduces creditor balance (like a debit event)
           description: `Received settlement from: ${sender ? sender.name : 'Unknown User'}`,
           amount: amt
         });
