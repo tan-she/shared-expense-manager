@@ -4,7 +4,7 @@ export default class SettlementAsExpenseDetector extends AnomalyDetector {
   constructor() {
     super(
       'SETTLEMENT_AS_EXPENSE',
-      'INFO',
+      'WARNING',
       'The description contains keywords indicating this transaction may be a settlement payment, not a group expense.'
     );
   }
@@ -18,7 +18,8 @@ export default class SettlementAsExpenseDetector extends AnomalyDetector {
       return {
         anomaly_type: this.name,
         severity: this.severity,
-        description: this.description
+        description: this.description,
+        suggested_fix: 'Convert transaction to a direct Settlement entry instead of an Expense.'
       };
     }
     return null;

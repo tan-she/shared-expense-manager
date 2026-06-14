@@ -15,7 +15,6 @@ import pool from '../config/db.js';
 const router = express.Router();
 router.use(protect);
 
-// Configure Multer memory storage (files are parsed directly in memory as strings, no disk write)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
@@ -96,7 +95,6 @@ router.get('/session/:sessionId', asyncHandler(async (req, res) => {
 
   const session = sessionResult.rows[0];
 
-  // Membership validation
   const memberCheck = await pool.query(
     `SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2`,
     [session.group_id, req.user.id]
@@ -105,9 +103,8 @@ router.get('/session/:sessionId', asyncHandler(async (req, res) => {
     throw createError(403, 'You are not a member of this group.');
   }
 
-  // Fetch anomalies for review
   const anomaliesResult = await pool.query(
-    `SELECT id, row_number, anomaly_type, severity, description, action_taken, approved
+    `SELECT id, row_number, anomaly_type, severity, description, action_taken, approved, raw_row_json, suggested_fix
      FROM import_anomalies
      WHERE import_session_id = $1
      ORDER BY row_number ASC`,
@@ -124,7 +121,7 @@ router.get('/session/:sessionId', asyncHandler(async (req, res) => {
 // ── POST /api/imports/session/:sessionId/commit ───────────────────────────
 router.post('/session/:sessionId/commit', asyncHandler(async (req, res) => {
   const sessionId = parseInt(req.params.sessionId);
-  const { resolutions } = req.body; // Array of { row_number, action: 'IMPORT'|'SKIP'|'FIX', fix_data: {} }
+  const { resolutions } = req.body;
 
   const sessionResult = await pool.query(
     `SELECT group_id FROM import_sessions WHERE id = $1`,
@@ -142,11 +139,12 @@ router.post('/session/:sessionId/commit', asyncHandler(async (req, res) => {
     throw createError(403, 'You are not a member of this group.');
   }
 
-  const result = await CsvImportEngine.commitImport(sessionId, resolutions);
+  const result = await CsvImportEngine.commitImport(sessionId, resolutions, req.user.id);
 
   res.status(200).json({
     success: true,
     message: 'Import session committed successfully.',
+    rowsProcessed: resolutions.length,
     rowsImported: result.rowsImported,
     rowsSkipped: result.rowsSkipped
   });
@@ -156,7 +154,6 @@ router.post('/session/:sessionId/commit', asyncHandler(async (req, res) => {
 router.get('/session/:sessionId/report/pdf', asyncHandler(async (req, res) => {
   const sessionId = parseInt(req.params.sessionId);
 
-  // Validate group member privilege
   const sessionResult = await pool.query(
     `SELECT group_id FROM import_sessions WHERE id = $1`,
     [sessionId]
@@ -175,7 +172,6 @@ router.get('/session/:sessionId/report/pdf', asyncHandler(async (req, res) => {
 
   const doc = await PdfService.generateAuditReport(sessionId);
 
-  // Stream PDF directly to response
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename=import_audit_${sessionId}.pdf`);
 

@@ -1,7 +1,7 @@
 /**
  * services/importengine/AnomalyDetectionService.js
  *
- * Pipeline coordinator that registers all 14 anomaly detectors
+ * Pipeline coordinator that registers all 15 anomaly detectors
  * and runs them sequentially over each parsed CSV row.
  *
  * Design Pattern: Chain of Responsibility Pattern
@@ -21,11 +21,10 @@ import ConflictingDuplicatesDetector from './detectors/ConflictingDuplicatesDete
 import MembershipViolationsDetector from './detectors/MembershipViolationsDetector.js';
 import PrecisionIssuesDetector from './detectors/PrecisionIssuesDetector.js';
 import CurrencyConversionIssuesDetector from './detectors/CurrencyConversionIssuesDetector.js';
+import IdentityAliasDetector from './detectors/IdentityAliasDetector.js';
 
 class AnomalyDetectionService {
   constructor() {
-    // Register all 14 detectors in a specific evaluation sequence.
-    // Critical detectors should be run early.
     this.detectors = [
       new DateFormatInconsistencyDetector(),
       new MissingPayerDetector(),
@@ -40,17 +39,11 @@ class AnomalyDetectionService {
       new ConflictingDuplicatesDetector(),
       new DuplicateExpenseDetector(),
       new NearDuplicateExpenseDetector(),
-      new SettlementAsExpenseDetector()
+      new SettlementAsExpenseDetector(),
+      new IdentityAliasDetector()
     ];
   }
 
-  /**
-   * Evaluates a single row against all registered detectors.
-   *
-   * @param {object} row - The CSV row
-   * @param {object} context - Context (existing group expenses, members, raw rows)
-   * @returns {Array<object>} List of detected anomalies
-   */
   detectAnomalies(row, context) {
     const anomalies = [];
 

@@ -26,10 +26,6 @@ const strategies = {
 };
 
 class CsvImportEngine {
-  /**
-   * Custom CSV parser that handles commas inside quotes.
-   * Format: Date,Description,Amount,Currency,PayerEmail,SplitType,ParticipantsSplits
-   */
   parseCsv(csvString) {
     const lines = csvString.split(/\r?\n/).filter(line => line.trim() !== '');
     if (lines.length <= 1) {
@@ -44,7 +40,7 @@ class CsvImportEngine {
       const cells = this.parseCsvLine(line);
 
       if (cells.length < headers.length) {
-        continue; // Skip malformed rows
+        continue;
       }
 
       const row = {};
@@ -58,9 +54,6 @@ class CsvImportEngine {
     return parsedRows;
   }
 
-  /**
-   * Helper that splits a string by commas, respecting double quotes.
-   */
   parseCsvLine(line) {
     const result = [];
     let currentCell = '';
@@ -82,14 +75,9 @@ class CsvImportEngine {
     return result;
   }
 
-  /**
-   * Stages the CSV upload by evaluating it and saving to DB.
-   */
   async stageImport(userId, groupId, fileName, csvContent) {
-    // 1. Parse CSV
     const rows = this.parseCsv(csvContent);
 
-    // 2. Fetch context (group members and existing group expenses)
     const membersResult = await pool.query(
       `SELECT gm.user_id, u.name, u.email, gm.joined_at, gm.left_at
        FROM group_members gm
@@ -114,7 +102,6 @@ class CsvImportEngine {
       allRows: rows
     };
 
-    // 3. Stage the Import Session in DB
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -129,7 +116,6 @@ class CsvImportEngine {
 
       let totalAnomaliesCount = 0;
 
-      // 4. Run anomaly detection and stage findings
       for (let idx = 0; idx < rows.length; idx++) {
         const row = rows[idx];
         const rowContext = { ...context, currentRowIndex: idx };
@@ -138,9 +124,17 @@ class CsvImportEngine {
         for (const anomaly of anomalies) {
           totalAnomaliesCount++;
           await client.query(
-            `INSERT INTO import_anomalies (import_session_id, row_number, anomaly_type, severity, description)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [session.id, idx + 1, anomaly.anomaly_type, anomaly.severity, anomaly.description]
+            `INSERT INTO import_anomalies (import_session_id, row_number, anomaly_type, severity, description, raw_row_json, suggested_fix)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              session.id,
+              idx + 1,
+              anomaly.anomaly_type,
+              anomaly.severity,
+              anomaly.description,
+              JSON.stringify(row),
+              anomaly.suggested_fix || 'No automated suggestion. Please review manually.'
+            ]
           );
         }
       }
@@ -158,13 +152,7 @@ class CsvImportEngine {
     }
   }
 
-  /**
-   * Commits the import session to actual database tables after user review.
-   *
-   * @param {number} sessionId - The staged import session
-   * @param {Array<object>} resolutions - Array of { row_number, action: 'IMPORT' | 'SKIP' | 'FIX', fix_data: object }
-   */
-  async commitImport(sessionId, resolutions = []) {
+  async commitImport(sessionId, resolutions = [], userId) {
     const sessionResult = await pool.query(
       `SELECT id, group_id, csv_data, status FROM import_sessions WHERE id = $1`,
       [sessionId]
@@ -179,9 +167,8 @@ class CsvImportEngine {
     }
 
     const groupId = session.group_id;
-    const rows = session.csv_data; // JSON parsed rows array
+    const rows = session.csv_data;
 
-    // Gather active group members map for email-to-id mapping
     const membersResult = await pool.query(
       `SELECT gm.user_id, u.email FROM group_members gm
        JOIN users u ON u.id = gm.user_id
@@ -207,26 +194,32 @@ class CsvImportEngine {
         if (resolution.action === 'SKIP') {
           rowsSkipped++;
           await client.query(
-            `UPDATE import_anomalies SET action_taken = 'SKIPPED_BY_USER', approved = true
-             WHERE import_session_id = $1 AND row_number = $2`,
-            [sessionId, rowNumber]
+            `UPDATE import_anomalies 
+             SET action_taken = 'SKIPPED_BY_USER', approved = true, resolved_by = $1, resolved_at = NOW()
+             WHERE import_session_id = $2 AND row_number = $3`,
+            [userId, sessionId, rowNumber]
           );
           continue;
         }
 
         // Apply edits if action is 'FIX'
-        const row = resolution.action === 'FIX' && resolution.fix_data
+        let row = resolution.action === 'FIX' && resolution.fix_data
           ? { ...rows[i], ...resolution.fix_data }
           : rows[i];
 
-        // Map payer email to database ID
-        const payerEmail = row.PayerEmail?.toLowerCase().trim();
-        const payerId = emailToIdMap[payerEmail];
-        if (!payerId) {
-          throw createError(400, `Row #${rowNumber} Payer email (${payerEmail}) does not belong to any active group member.`);
+        let amount = parseFloat(row.Amount);
+        let payerEmail = row.PayerEmail?.toLowerCase().trim();
+        let payerId = emailToIdMap[payerEmail];
+
+        // ── REFUND HANDLING RULE ──────────────────────────────────────────
+        // If the amount is negative and the user selected to treat it as a Refund,
+        // we invert the payer and participants.
+        let isRefund = false;
+        if (amount < 0 && (resolution.action === 'REFUND' || resolution.treatAsRefund)) {
+          isRefund = true;
+          amount = Math.abs(amount); // Convert negative to positive amount
         }
 
-        const amount = parseFloat(row.Amount);
         const currency = row.Currency?.toUpperCase().trim();
         const splitType = row.SplitType?.toUpperCase().trim();
         const date = new Date(row.Date);
@@ -236,24 +229,72 @@ class CsvImportEngine {
         const convertedAmount = CurrencyService.convertToBase(amount, currency);
 
         // Parse participants splits
-        // EQUAL splits: email1;email2
-        // PERCENTAGE/EXACT splits: email1:value;email2:value
         const splitPairs = row.ParticipantsSplits?.split(';').filter(s => s.trim() !== '') || [];
-        const splitsInput = splitPairs.map(pair => {
+        
+        let splitsInput = splitPairs.map(pair => {
           if (splitType === 'EQUAL') {
             const email = pair.toLowerCase().trim();
-            const userId = emailToIdMap[email];
-            if (!userId) throw createError(400, `Unknown participant email "${email}" in Row #${rowNumber}.`);
-            return { user_id: userId };
+            const uId = emailToIdMap[email];
+            if (!uId) throw createError(400, `Unknown participant email "${email}" in Row #${rowNumber}.`);
+            return { user_id: uId };
           } else {
             const parts = pair.split(':');
             const email = parts[0].toLowerCase().trim();
             const value = parseFloat(parts[1]);
-            const userId = emailToIdMap[email];
-            if (!userId) throw createError(400, `Unknown participant email "${email}" in Row #${rowNumber}.`);
-            return { user_id: userId, value };
+            const uId = emailToIdMap[email];
+            if (!uId) throw createError(400, `Unknown participant email "${email}" in Row #${rowNumber}.`);
+            return { user_id: uId, value };
           }
         });
+
+        // If it is a refund, we swap roles:
+        // The original payer becomes the split participant who receives the refund,
+        // and the split participants collectively pay back the original payer.
+        if (isRefund) {
+          // Refund logic: swap payer and split participants
+          if (splitsInput.length === 1) {
+            // Simple 1-to-1 refund swap
+            const originalParticipant = splitsInput[0].user_id;
+            splitsInput = [{ user_id: payerId, value: splitsInput[0].value }];
+            payerId = originalParticipant;
+          } else {
+            // Multi-party refund: The splits participants become the payers.
+            // Since our system supports a single payer per expense record,
+            // we create a separate refund record for each participant returning their share.
+            for (const item of splitsInput) {
+              const itemPayer = item.user_id;
+              const refundValue = splitType === 'EQUAL' ? (convertedAmount / splitsInput.length) : item.value;
+              
+              const refundCalculated = [{ user_id: payerId, share_value: refundValue }];
+
+              const expenseResult = await client.query(
+                `INSERT INTO expenses (group_id, payer_id, description, amount, currency, expense_date, split_type, exchange_rate, converted_amount, status)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ACTIVE')
+                 RETURNING id`,
+                [groupId, itemPayer, `[Refund] ${row.Description.trim()}`, refundValue, currency, date, 'EXACT', exchangeRate, refundValue]
+              );
+              const expenseId = expenseResult.rows[0].id;
+
+              await client.query(
+                `INSERT INTO expense_splits (expense_id, user_id, share_value) VALUES ($1, $2, $3)`,
+                [expenseId, payerId, refundValue]
+              );
+            }
+
+            await client.query(
+              `UPDATE import_anomalies 
+               SET action_taken = 'IMPORTED_AS_REFUND', approved = true, resolved_by = $1, resolved_at = NOW()
+               WHERE import_session_id = $2 AND row_number = $3`,
+              [userId, sessionId, rowNumber]
+            );
+            rowsImported++;
+            continue; // Skip standard flow
+          }
+        }
+
+        if (!payerId) {
+          throw createError(400, `Row #${rowNumber} Payer email (${payerEmail}) does not belong to any active group member.`);
+        }
 
         // Run split strategy calculation
         const strategy = strategies[splitType];
@@ -263,7 +304,7 @@ class CsvImportEngine {
 
         const calculatedSplits = strategy.calculate(convertedAmount, splitsInput, payerId);
 
-        // Save expense record (marking as DRAFT first if needed, but committing commits it as ACTIVE)
+        // Save expense record
         const expenseResult = await client.query(
           `INSERT INTO expenses (group_id, payer_id, description, amount, currency, expense_date, split_type, exchange_rate, converted_amount, status)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ACTIVE')
@@ -282,15 +323,16 @@ class CsvImportEngine {
 
         // Update anomalies action log
         await client.query(
-          `UPDATE import_anomalies SET action_taken = $1, approved = true
-           WHERE import_session_id = $2 AND row_number = $3`,
-          [resolution.action === 'FIX' ? 'RESOLVED_WITH_FIX' : 'IMPORTED_AS_IS', sessionId, rowNumber]
+          `UPDATE import_anomalies 
+           SET action_taken = $1, approved = true, resolved_by = $2, resolved_at = NOW()
+           WHERE import_session_id = $3 AND row_number = $4`,
+          [isRefund ? 'IMPORTED_AS_REFUND' : (resolution.action === 'FIX' ? 'RESOLVED_WITH_FIX' : 'IMPORTED_AS_IS'), userId, sessionId, rowNumber]
         );
 
         rowsImported++;
       }
 
-      // 7. Close import session status
+      // Close import session status
       await client.query(
         `UPDATE import_sessions
          SET status = 'COMMITTED', rows_imported = $1, rows_skipped = $2

@@ -190,6 +190,10 @@ CREATE TABLE import_anomalies (
     description        VARCHAR(500)  NOT NULL,
     action_taken       VARCHAR(100),
     approved           BOOLEAN       NOT NULL DEFAULT FALSE,
+    raw_row_json       JSONB,
+    suggested_fix      VARCHAR(500),
+    resolved_by        INTEGER       REFERENCES users(id),
+    resolved_at        TIMESTAMP,
     created_at         TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT chk_anomaly_severity CHECK (severity IN ('INFO', 'WARNING', 'CRITICAL'))
