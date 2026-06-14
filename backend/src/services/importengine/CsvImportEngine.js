@@ -1,7 +1,7 @@
 /**
  * services/importengine/CsvImportEngine.js
  *
- * Directs the entire CSV ingestion pipeline:
+ * Directs the entire CSV Ingest pipeline:
  *   1. Custom quote-aware CSV parser.
  *   2. Gathers group members and existing expenses database context.
  *   3. Evaluates rows via AnomalyDetectionService.
@@ -212,15 +212,23 @@ class CsvImportEngine {
         let payerId = emailToIdMap[payerEmail];
 
         // ── REFUND HANDLING RULE ──────────────────────────────────────────
-        // If the amount is negative and the user selected to treat it as a Refund,
-        // we invert the payer and participants.
+        // Refunds are transformed into compensating transactions that reverse
+        // the original debt direction.
         let isRefund = false;
         if (amount < 0 && (resolution.action === 'REFUND' || resolution.treatAsRefund)) {
           isRefund = true;
-          amount = Math.abs(amount); // Convert negative to positive amount
+          amount = Math.abs(amount);
         }
 
         const currency = row.Currency?.toUpperCase().trim();
+        
+        // STRICT CURRENCY CHECK:
+        // Do not silently fallback. If the currency is invalid or empty,
+        // block import unless it is explicitly resolved.
+        if (!currency || (currency !== 'INR' && currency !== 'USD')) {
+          throw createError(400, `Row #${rowNumber} fails import: Invalid or missing currency code "${row.Currency}". Explicit resolution is required.`);
+        }
+
         const splitType = row.SplitType?.toUpperCase().trim();
         const date = new Date(row.Date);
 
@@ -247,26 +255,16 @@ class CsvImportEngine {
           }
         });
 
-        // If it is a refund, we swap roles:
-        // The original payer becomes the split participant who receives the refund,
-        // and the split participants collectively pay back the original payer.
         if (isRefund) {
-          // Refund logic: swap payer and split participants
           if (splitsInput.length === 1) {
-            // Simple 1-to-1 refund swap
             const originalParticipant = splitsInput[0].user_id;
             splitsInput = [{ user_id: payerId, value: splitsInput[0].value }];
             payerId = originalParticipant;
           } else {
-            // Multi-party refund: The splits participants become the payers.
-            // Since our system supports a single payer per expense record,
-            // we create a separate refund record for each participant returning their share.
             for (const item of splitsInput) {
               const itemPayer = item.user_id;
               const refundValue = splitType === 'EQUAL' ? (convertedAmount / splitsInput.length) : item.value;
               
-              const refundCalculated = [{ user_id: payerId, share_value: refundValue }];
-
               const expenseResult = await client.query(
                 `INSERT INTO expenses (group_id, payer_id, description, amount, currency, expense_date, split_type, exchange_rate, converted_amount, status)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ACTIVE')
@@ -288,7 +286,7 @@ class CsvImportEngine {
               [userId, sessionId, rowNumber]
             );
             rowsImported++;
-            continue; // Skip standard flow
+            continue;
           }
         }
 
@@ -296,7 +294,6 @@ class CsvImportEngine {
           throw createError(400, `Row #${rowNumber} Payer email (${payerEmail}) does not belong to any active group member.`);
         }
 
-        // Run split strategy calculation
         const strategy = strategies[splitType];
         if (!strategy) {
           throw createError(400, `Unsupported split type: ${splitType} in Row #${rowNumber}.`);
@@ -304,7 +301,6 @@ class CsvImportEngine {
 
         const calculatedSplits = strategy.calculate(convertedAmount, splitsInput, payerId);
 
-        // Save expense record
         const expenseResult = await client.query(
           `INSERT INTO expenses (group_id, payer_id, description, amount, currency, expense_date, split_type, exchange_rate, converted_amount, status)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ACTIVE')
@@ -313,7 +309,6 @@ class CsvImportEngine {
         );
         const expenseId = expenseResult.rows[0].id;
 
-        // Save splits
         for (const s of calculatedSplits) {
           await client.query(
             `INSERT INTO expense_splits (expense_id, user_id, share_value) VALUES ($1, $2, $3)`,
@@ -321,7 +316,6 @@ class CsvImportEngine {
           );
         }
 
-        // Update anomalies action log
         await client.query(
           `UPDATE import_anomalies 
            SET action_taken = $1, approved = true, resolved_by = $2, resolved_at = NOW()
@@ -332,12 +326,12 @@ class CsvImportEngine {
         rowsImported++;
       }
 
-      // Close import session status
+      // ── SESSION LEVEL AUDIT LOGGING ───────────────────────────────────────
       await client.query(
         `UPDATE import_sessions
-         SET status = 'COMMITTED', rows_imported = $1, rows_skipped = $2
-         WHERE id = $3`,
-        [rowsImported, rowsSkipped, sessionId]
+         SET status = 'COMMITTED', rows_imported = $1, rows_skipped = $2, approved_by = $3, approved_at = NOW()
+         WHERE id = $4`,
+        [rowsImported, rowsSkipped, userId, sessionId]
       );
 
       await client.query('COMMIT');

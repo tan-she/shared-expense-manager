@@ -168,6 +168,8 @@ CREATE TABLE import_sessions (
     rows_skipped    INTEGER       NOT NULL DEFAULT 0,
     csv_data        JSONB         NOT NULL DEFAULT '[]',
     imported_at     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    approved_by     INTEGER       REFERENCES users(id),
+    approved_at     TIMESTAMP,
 
     CONSTRAINT chk_session_status CHECK (status IN ('PENDING', 'COMMITTED', 'REJECTED'))
 );
