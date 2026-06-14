@@ -66,6 +66,17 @@ router.post('/', asyncHandler(async (req, res) => {
     throw createError(400, 'Both settlement participants must be active group members on the settlement date.');
   }
 
+  // Validate settlement logic constraint:
+  // Settlement is only allowed if the payer owes money (net_balance < 0)
+  // OR the receiver is owed money (net_balance > 0)
+  const groupBalances = await BalanceEngine.getBalancesAndBreakdown(group_id);
+  const payerBal = groupBalances.find(b => b.user_id === parseInt(from_user_id))?.net_balance || 0;
+  const payeeBal = groupBalances.find(b => b.user_id === parseInt(to_user_id))?.net_balance || 0;
+
+  if (payerBal >= 0 && payeeBal <= 0) {
+    throw createError(400, 'Invalid settlement: Payer must owe money or receiver must be owed money to settle a debt.');
+  }
+
   const result = await pool.query(
     `INSERT INTO settlements (group_id, from_user_id, to_user_id, amount, currency, settlement_date)
      VALUES ($1, $2, $3, $4, $5, $6)

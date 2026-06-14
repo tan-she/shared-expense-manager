@@ -1,13 +1,14 @@
 /**
  * routes/balances.js — Balance Engine Endpoints
  *
- * Exposes balance computations for a group.
+ * Exposes balance calculations for a group.
  */
 
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
 import { asyncHandler, createError } from '../middleware/errorHandler.js';
 import BalanceEngine from '../services/BalanceEngine.js';
+import SettlementOptimizer from '../services/SettlementOptimizer.js';
 import pool from '../config/db.js';
 
 const router = express.Router();
@@ -18,7 +19,6 @@ router.use(protect);
 router.get('/group/:groupId', asyncHandler(async (req, res) => {
   const groupId = parseInt(req.params.groupId);
 
-  // Validate requester is a member of the group
   const memberCheck = await pool.query(
     `SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2`,
     [groupId, req.user.id]
@@ -28,7 +28,7 @@ router.get('/group/:groupId', asyncHandler(async (req, res) => {
   }
 
   const balancesWithBreakdown = await BalanceEngine.getBalancesAndBreakdown(groupId);
-  const optimizedSettlements = BalanceEngine.minimizeDebts(balancesWithBreakdown);
+  const optimizedSettlements = SettlementOptimizer.minimizeDebts(balancesWithBreakdown);
 
   res.status(200).json({
     success: true,
