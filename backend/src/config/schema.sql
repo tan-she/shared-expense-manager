@@ -48,6 +48,7 @@ CREATE INDEX idx_users_email ON users(email);
 CREATE TABLE groups (
     id          SERIAL PRIMARY KEY,
     name        VARCHAR(100)  NOT NULL,
+    creator_id  INTEGER       NOT NULL REFERENCES users(id),
     created_at  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -67,7 +68,7 @@ CREATE TABLE group_members (
     joined_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     left_at     TIMESTAMP,
 
-    CONSTRAINT uq_group_member UNIQUE (group_id, user_id),
+    CONSTRAINT uq_group_member UNIQUE (group_id, user_id, joined_at),
     CONSTRAINT chk_leave_after_join CHECK (left_at IS NULL OR left_at > joined_at)
 );
 
