@@ -97,8 +97,10 @@ CREATE TABLE expenses (
     exchange_rate      NUMERIC(10, 4)  NOT NULL DEFAULT 1.0000,
     converted_amount   NUMERIC(12, 2)  NOT NULL,
     converted_currency VARCHAR(3)      NOT NULL DEFAULT 'INR',
+    status             VARCHAR(20)     NOT NULL DEFAULT 'ACTIVE',
     created_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    CONSTRAINT chk_expenses_status     CHECK (status             IN ('DRAFT', 'ACTIVE', 'SETTLED', 'ARCHIVED')),
     CONSTRAINT chk_expenses_currency   CHECK (currency           IN ('INR', 'USD')),
     CONSTRAINT chk_expenses_conv_curr  CHECK (converted_currency IN ('INR', 'USD')),
     CONSTRAINT chk_expenses_split_type CHECK (split_type         IN ('EQUAL', 'PERCENTAGE', 'EXACT')),

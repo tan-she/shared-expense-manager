@@ -47,6 +47,7 @@ router.get('/group/:groupId', asyncHandler(async (req, res) => {
        e.split_type,
        e.exchange_rate,
        e.converted_amount,
+       e.status,
        e.created_at
      FROM expenses e
      JOIN users u ON u.id = e.payer_id
@@ -63,7 +64,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
   const expenseId = parseInt(req.params.id);
 
   const expenseResult = await pool.query(
-    `SELECT id, group_id, payer_id, description, amount, currency, expense_date, split_type, exchange_rate, converted_amount FROM expenses WHERE id = $1`,
+    `SELECT id, group_id, payer_id, description, amount, currency, expense_date, split_type, exchange_rate, converted_amount, status FROM expenses WHERE id = $1`,
     [expenseId]
   );
   if (expenseResult.rows.length === 0) {
@@ -73,7 +74,6 @@ router.get('/:id', asyncHandler(async (req, res) => {
   const expense = expenseResult.rows[0];
   await assertMembership(req.user.id, expense.group_id);
 
-  // Fetch individual splits
   const splitsResult = await pool.query(
     `SELECT
        es.user_id,
@@ -94,7 +94,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
 
 // ── POST /api/expenses ────────────────────────────────────────────────────
 router.post('/', asyncHandler(async (req, res) => {
-  const { group_id, payer_id, description, amount, currency, expense_date, split_type, splits } = req.body;
+  const { group_id, payer_id, description, amount, currency, expense_date, split_type, splits, status } = req.body;
 
   // 1. Basic validation
   if (!group_id || !payer_id || !description || !amount || !currency || !expense_date || !split_type || !splits) {
@@ -117,8 +117,10 @@ router.post('/', asyncHandler(async (req, res) => {
   const exchangeRate = CurrencyService.getRate(currency);
   const convertedAmount = CurrencyService.convertToBase(amount, currency);
 
-  // 5. Calculate splits
-  const calculatedSplits = strategy.calculate(convertedAmount, splits);
+  // 5. Calculate splits (passing payer_id for rounding remainders)
+  const calculatedSplits = strategy.calculate(convertedAmount, splits, payer_id);
+
+  const expenseStatus = status || 'ACTIVE';
 
   // 6. DB Transaction Commit
   const client = await pool.connect();
@@ -126,10 +128,10 @@ router.post('/', asyncHandler(async (req, res) => {
     await client.query('BEGIN');
 
     const expenseResult = await client.query(
-      `INSERT INTO expenses (group_id, payer_id, description, amount, currency, expense_date, split_type, exchange_rate, converted_amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, group_id, payer_id, description, amount, currency, expense_date, split_type, exchange_rate, converted_amount`,
-      [group_id, payer_id, description, amount, currency.toUpperCase(), new Date(expense_date), split_type.toUpperCase(), exchangeRate, convertedAmount]
+      `INSERT INTO expenses (group_id, payer_id, description, amount, currency, expense_date, split_type, exchange_rate, converted_amount, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id, group_id, payer_id, description, amount, currency, expense_date, split_type, exchange_rate, converted_amount, status`,
+      [group_id, payer_id, description, amount, currency.toUpperCase(), new Date(expense_date), split_type.toUpperCase(), exchangeRate, convertedAmount, expenseStatus]
     );
 
     const expense = expenseResult.rows[0];
@@ -155,9 +157,8 @@ router.post('/', asyncHandler(async (req, res) => {
 // ── PUT /api/expenses/:id ─────────────────────────────────────────────────
 router.put('/:id', asyncHandler(async (req, res) => {
   const expenseId = parseInt(req.params.id);
-  const { payer_id, description, amount, currency, expense_date, split_type, splits } = req.body;
+  const { payer_id, description, amount, currency, expense_date, split_type, splits, status } = req.body;
 
-  // Verify expense exists
   const expenseCheck = await pool.query(
     'SELECT group_id FROM expenses WHERE id = $1',
     [expenseId]
@@ -180,21 +181,22 @@ router.put('/:id', asyncHandler(async (req, res) => {
 
   const exchangeRate = CurrencyService.getRate(currency);
   const convertedAmount = CurrencyService.convertToBase(amount, currency);
-  const calculatedSplits = strategy.calculate(convertedAmount, splits);
+  const calculatedSplits = strategy.calculate(convertedAmount, splits, payer_id);
+
+  const expenseStatus = status || 'ACTIVE';
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Update expense record
     await client.query(
       `UPDATE expenses
-       SET payer_id = $1, description = $2, amount = $3, currency = $4, expense_date = $5, split_type = $6, exchange_rate = $7, converted_amount = $8
-       WHERE id = $9`,
-      [payer_id, description, amount, currency.toUpperCase(), new Date(expense_date), split_type.toUpperCase(), exchangeRate, convertedAmount, expenseId]
+       SET payer_id = $1, description = $2, amount = $3, currency = $4, expense_date = $5, split_type = $6, exchange_rate = $7, converted_amount = $8, status = $9
+       WHERE id = $10`,
+      [payer_id, description, amount, currency.toUpperCase(), new Date(expense_date), split_type.toUpperCase(), exchangeRate, convertedAmount, expenseStatus, expenseId]
     );
 
-    // Rebuild splits: clear old, insert new
+    // Rebuild splits
     await client.query('DELETE FROM expense_splits WHERE expense_id = $1', [expenseId]);
     for (const s of calculatedSplits) {
       await client.query(

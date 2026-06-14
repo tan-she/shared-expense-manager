@@ -2,10 +2,10 @@
  * services/splitstrategy/EqualSplitStrategy.js
  *
  * Divides an amount equally among a list of participants.
- * Handles precision adjustments for pennies/cents that do not split perfectly:
- *   - E.g. Splitting 100.00 INR among 3 people.
- *   - Basic split: 33.33 each. Sum = 99.99 (leaves 0.01 remainder).
- *   - The strategy adds the remaining 0.01 to the first participant to maintain sum integrity.
+ * Rounding Remainder Rule:
+ *   If there is a remainder (e.g. ₹100.00 split among 3 people = 99.99 + 0.01),
+ *   assign the remainder to the payer if they are in the split.
+ *   Otherwise, assign it to the first participant in the list.
  */
 
 import SplitStrategy from './SplitStrategy.js';
@@ -18,25 +18,33 @@ export default class EqualSplitStrategy extends SplitStrategy {
     }
   }
 
-  calculate(totalAmount, splitsInput) {
+  calculate(totalAmount, splitsInput, payerId) {
     this.validate(totalAmount, splitsInput);
 
     const count = splitsInput.length;
-    // Perform operations in cents to avoid floats issues
     const totalCents = Math.round(totalAmount * 100);
     const baseShareCents = Math.floor(totalCents / count);
-    let remainderCents = totalCents % count;
+    const remainderCents = totalCents % count;
 
-    return splitsInput.map((p, idx) => {
-      // Allocate the remaining pennies one-by-one to the first few users
-      const extra = remainderCents > 0 ? 1 : 0;
-      remainderCents--;
+    // First assign base shares
+    const shares = splitsInput.map(p => ({
+      user_id: parseInt(p.user_id),
+      share_value: baseShareCents / 100
+    }));
 
-      const calculatedShare = (baseShareCents + extra) / 100;
-      return {
-        user_id: p.user_id,
-        share_value: calculatedShare
-      };
-    });
+    // Distribute remainder pennies
+    if (remainderCents > 0) {
+      // Find payer in the split participants
+      const payerIndex = shares.findIndex(s => s.user_id === parseInt(payerId));
+      if (payerIndex !== -1) {
+        // If payer is in the split, give them the remainder cents
+        shares[payerIndex].share_value = Math.round((shares[payerIndex].share_value * 100) + remainderCents) / 100;
+      } else {
+        // Fallback to the first participant
+        shares[0].share_value = Math.round((shares[0].share_value * 100) + remainderCents) / 100;
+      }
+    }
+
+    return shares;
   }
 }
